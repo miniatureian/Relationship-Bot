@@ -3,18 +3,17 @@ import discord
 from discord.ext import commands
 import os
 from config import BOT_TOKEN
-from discord.ui import View, Button, Select, SelectOption
+from discord.ui import View, Button, Select
 import prompt_manager
+import json
 
 # Debug levels: 0 = Silent, 1 = Errors only, 2 = Info, 3 = Verbose
-DEBUG_LEVEL = 0
+DEBUG_LEVEL = 3
 
 # Function to log debug messages
 async def log_debug(guild, message, level=1):
     if DEBUG_LEVEL >= level:
-        bot_messages_channel = discord.utils.get(guild.text_channels, name="bot-messages")
-        if bot_messages_channel:
-            await bot_messages_channel.send(message)
+        print(f"[DEBUG] {message}")
 
 # Initialize bot with intents
 intents = discord.Intents.default()
@@ -27,10 +26,27 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 manager = prompt_manager.PromptManager()  # Initialize the prompt manager
 
 PROMPT_FILES_DIR = "prompts"
+NOTIFY_FILE = "notify.json"
 
 # Ensure the prompts directory exists
 if not os.path.exists(PROMPT_FILES_DIR):
     os.makedirs(PROMPT_FILES_DIR)
+
+# Load notify.json data with validation
+def load_notify_data():
+    if os.path.exists(NOTIFY_FILE):
+        try:
+            with open(NOTIFY_FILE, "r") as f:
+                data = json.load(f)
+                return data
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+notify_data = load_notify_data()
+
+def save_notify_data():
+    with open(NOTIFY_FILE, "w") as f:
+        json.dump(notify_data, f)
 
 @bot.event
 async def on_ready():
@@ -57,59 +73,40 @@ async def init(ctx):
         await ctx.send("This command can only be used in a server.")
         return
 
-    # Create necessary channels
-    general_channel = await guild.create_text_channel("general")
-    responses_channel = await guild.create_text_channel("responses")
-    add_prompts_channel = await guild.create_text_channel("add-prompts")
-    bot_messages_channel = await guild.create_text_channel("bot-messages")
-
-    # Add server admins to the bot-messages channel
-    for member in guild.members:
-        if member.guild_permissions.administrator:
-            overwrites = bot_messages_channel.overwrites_for(member)
-            overwrites.read_messages = True
-            await bot_messages_channel.set_permissions(member, overwrite=overwrites)
+    # Ensure necessary channels exist
+    channel_names = ["general", "responses", "add-prompts", "bot-messages"]
+    for channel_name in channel_names:
+        if not discord.utils.get(guild.text_channels, name=channel_name):
+            await guild.create_text_channel(channel_name)
 
     # Create private channels for each member
+    private_channels = getPrivateChannels(guild)  # Get existing private channels to avoid duplicates
     for member in guild.members:
         if not member.bot:
-            overwrites = {
-                guild.default_role: discord.PermissionOverwrite(read_messages=False),
-                member: discord.PermissionOverwrite(read_messages=True),
-                bot.user: discord.PermissionOverwrite(read_messages=True),
-            }
-            await guild.create_text_channel(f"{member.name}-private", overwrites=overwrites)
-
-    await ctx.send("Server has been configured with private channels and the 'add-prompts' channel.")
-    await log_debug(guild, "Server initialization completed.", level=2)
-
-@bot.command()
-async def prompt(ctx, *, prompt_text):
-    guild = ctx.guild
-    if not guild:
-        await ctx.send("This command can only be used in a server.")
-        return
-
-    responses_channel = discord.utils.get(guild.text_channels, name="responses")
-    if not responses_channel:
-        await ctx.send("Responses channel not found. Please run !init first.")
-        return
-
-    # Create a thread in the responses channel
-    thread = await responses_channel.create_thread(name=prompt_text, auto_archive_duration=1440)
-
-    # Save the prompt and thread info using the manager
-    prompt_id = manager.add_prompt(prompt_text, thread.id)
-
-    # Send the prompt to each private channel
-    for member in guild.members:
-        if not member.bot:
-            private_channel = discord.utils.get(guild.text_channels, name=f"{member.name}-private")
-            if private_channel:
-                await private_channel.send(f"New prompt: {prompt_text}\nPlease reply to this message with your response.")
-
-    await ctx.send(f"Prompt sent to all users and thread created in {responses_channel.mention}.")
-    await log_debug(guild, f"Prompt '{prompt_text}' sent and thread created.", level=2)
+            for existing_channel, members in private_channels.items():
+                # Check if the member already has a private channel
+                if member in members:
+                    print(f"Private channel already exists for {member.name}. Skipping creation.")
+                    break
+            else:  # This else corresponds to the for loop, it executes if the loop is not broken
+                # Create a new private channel for the member if it doesn't exist
+                private_channel_name = f"{member.name}-private"
+                overwrites = {
+                    guild.default_role: discord.PermissionOverwrite(read_messages=False),
+                    member: discord.PermissionOverwrite(read_messages=True),
+                    bot.user: discord.PermissionOverwrite(read_messages=True),
+                }
+                await guild.create_text_channel(private_channel_name, overwrites=overwrites)
+                for channel in getPrivateChannels(guild).keys():
+                    if member.name in channel.name:
+                        # send the prompt to query the member if they would like notifications in their private channel
+                        view = NotificationPreferenceView(member.id)
+                        await channel.send(
+                            "Welcome to your private channel! Would you like to receive notifications for prompt responses?",
+                            view=view
+                        )
+    await ctx.send("Server has been configured")
+    print("Server initialization completed.")
 
 @bot.event
 async def on_message(message):
@@ -155,9 +152,13 @@ async def on_message(message):
         # Check if the input is a new file name
         if prompt_text.endswith(".json"):
             if manager.create_prompt_file(prompt_text):
-                await message.channel.send(f"New prompt file '{prompt_text}' created.")
+                # Save the second-to-last message (prompt text) to the new file
+                messages = await message.channel.history(limit=2).to_list()
+                previous_message = messages[1]  # Get the second-to-last message
+                manager.add_prompt_to_file(prompt_text, previous_message.content.strip())
+                await message.channel.send(f"New prompt file '{prompt_text}' created and prompt added.")
             else:
-                await message.channel.send(f"File '{prompt_text}' already exists.")
+                await message.channel.send(f"File '{prompt_text}' already exists. Prompt not added.")
         else:
             # Provide buttons for existing files
             view = PromptFileSelectView(prompt_text)
@@ -188,32 +189,24 @@ class PromptFileSelectView(View):
         super().__init__(timeout=None)
         self.prompt_text = prompt_text
 
-        # Add a dropdown for existing prompt files
-        options = []
+        # Add buttons for existing prompt files
         for file_name in manager.list_prompt_files():
-            prompt_data = manager.load_prompt_file(file_name)
-            options.append(
-                SelectOption(
-                    label=file_name,
-                    description=f"{len(prompt_data.get('prompts', []))} prompts",
-                    value=file_name
-                )
+            button = Button(
+                label=file_name,
+                style=discord.ButtonStyle.primary
             )
+            button.callback = self.create_button_callback(file_name)
+            self.add_item(button)
 
-        if options:
-            select = Select(
-                placeholder="Select a prompt file to add to...",
-                options=options
+    def create_button_callback(self, file_name):
+        
+        async def callback(interaction: discord.Interaction):
+            # Save the second-to-last message (prompt text) to the selected file
+            manager.add_prompt_to_file(file_name, self.prompt_text)
+            await interaction.response.send_message(
+                f"Prompt added to {file_name}.", ephemeral=True
             )
-            select.callback = self.select_callback
-            self.add_item(select)
-
-    async def select_callback(self, interaction: discord.Interaction):
-        selected_file = interaction.data["values"][0]
-        manager.add_prompt_to_file(selected_file, self.prompt_text)
-        await interaction.response.send_message(
-            f"Prompt added to {selected_file}.", ephemeral=True
-        )
+        return callback
 
 @bot.event
 async def on_member_join(member):
@@ -221,26 +214,24 @@ async def on_member_join(member):
     if not guild:
         return
 
-    # Create a private channel for the new member
+    private_channel_name = f"{member.name}-private"
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(read_messages=False),
         member: discord.PermissionOverwrite(read_messages=True),
         bot.user: discord.PermissionOverwrite(read_messages=True),
     }
-    private_channel = await guild.create_text_channel(f"{member.name}-private", overwrites=overwrites)
+    private_channel = await guild.create_text_channel(private_channel_name, overwrites=overwrites)
 
     # Notify the general channel if it exists
     general_channel = discord.utils.get(guild.text_channels, name="general")
     if general_channel:
         await general_channel.send(f"Welcome {member.mention}! A private channel has been created for you.")
 
-    # Send a message with notification preference buttons in the private channel
-    if private_channel:
-        view = NotificationPreferenceView(member.id)
-        await private_channel.send(
-            "Welcome to your private channel! Would you like to receive notifications for prompt responses?",
-            view=view
-        )
+    view = NotificationPreferenceView(member.id)
+    await private_channel.send(
+        "Welcome to your private channel! Would you like to receive notifications for prompt responses?",
+        view=view
+    )
 
     await log_debug(guild, f"Private channel created for new member {member.name}.", level=2)
 
@@ -257,12 +248,55 @@ async def debug(ctx, level: int):
     global DEBUG_LEVEL
     DEBUG_LEVEL = max(0, min(level, 3))  # Clamp the level between 0 and 3
     await ctx.send(f"Debug level set to {DEBUG_LEVEL}.")
-    await log_debug(ctx.guild, f"Debug level changed to {DEBUG_LEVEL} by {ctx.author.name}.", level=3)
+    print(f"Debug level changed to {DEBUG_LEVEL} by {ctx.author.name}.")
 
 @bot.command()
 async def test(ctx):
-    # Placeholder for the test command
-    pass
+    # Use the prompt manager to get a random prompt
+    # prompt = manager.get_random_prompt()
+    prompt = "test"  # Placeholder for testing purposes, replace with actual logic if needed
+    if not prompt:
+        await ctx.send("No prompts available.")
+        return
+
+    guild = ctx.guild
+    if not guild:
+        await ctx.send("This command can only be used in a server.")
+        return
+
+    # Debug: Log the names of all channels the bot has access to
+    channel_names = [channel.name for channel in guild.text_channels]
+    print(f"Accessible channels: {channel_names}")  # Debugging output
+
+    # Test sending command to the private channels
+    for channel in getPrivateChannels(guild):  # Get all private channels in the guild
+        #find the list of non bot members of the private channel:
+        for member in getPrivateChannels(guild)[channel]:
+            # mention this member when you send the prompt in the private channel
+            print(f"Sending prompt to {member.name} in {channel.name}.")  # Debugging output
+            await channel.send(
+                f"Hello {member.mention},\n"
+                f"This week's prompt is:\n\n"
+                f"**{prompt}**\n\n"
+                f"Please reply directly to this message with your response."
+            )
+
+    await ctx.send("Prompt has been sent to all members' private channels.")
+
+def getPrivateChannels(guild):
+    # Helper function to get all private channels in a guild
+    private_channels = {}
+    for channel in guild.text_channels:
+        if "private" in channel.name:
+            members = []
+            for member in channel.members:  # Iterate over members in the private channel
+                if member.bot:
+                    continue
+                members.append(member)  # Add non-bot members to the list
+            #create the channel and list of members as a key-value pair in the dictionary
+            private_channels[channel] = members
+                
+    return private_channels  # Return both private channels and members for further use
 
 # Replace 'YOUR_BOT_TOKEN' with the imported BOT_TOKEN
 bot.run(BOT_TOKEN)
