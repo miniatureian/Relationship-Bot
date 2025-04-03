@@ -1,0 +1,59 @@
+# Relationship Bot
+
+Relationship Bot is a Discord bot designed to facilitate prompt-based interactions within a server. It allows users to receive weekly prompts, submit responses, and manage notifications for prompt-related activities. The bot also creates private channels for each user to ensure privacy and personalized interactions.
+
+## Features
+
+- **Prompt Management**: Sends weekly prompts to users and collects their responses.
+- **Private Channels**: Automatically creates private channels for each user upon joining the server.
+- **Notification Preferences**: Allows users to toggle notifications for prompt responses.
+- **Response Threads**: Compiles and posts user responses in a designated channel.
+
+## Commands
+
+- `!info`: Displays information about available commands.
+- `!init`: Configures the server with necessary channels and private user channels.
+- `!prompt`: Sends a new prompt to all users and collects responses.
+- `!notify`: Toggles notifications for prompt responses.
+
+## Setup
+
+1. Clone the repository or download the source code.
+2. Install the required dependencies:
+   ```bash
+   pip install discord.py
+   ```
+3. Create a `config.py` file in the project directory and add your bot token:
+   ```python
+   BOT_TOKEN = "your-bot-token-here"
+   ```
+4. Run the bot:
+   ```bash
+   python main.py
+   ```
+
+## File Structure
+
+- `main.py`: The main script containing the bot's logic and event handlers.
+- `NotificationPreferenceView.py`: Handles the notification preference UI.
+- `PromptFileSelectView.py`: Manages the UI for selecting prompt files.
+- `prompt_manager.py`: Manages prompts and responses.
+- `notifications.json`: Stores user notification preferences.
+- `prompts/`: Directory containing prompt files.
+
+## Usage
+
+1. Add the bot to your Discord server using the bot's invite link.
+2. Use the `!init` command to set up the server with required channels.
+3. Add prompts in the `add-prompts` channel or upload prompt files.
+4. Use the `!prompt` command to send prompts to users.
+5. Users can respond directly to the prompt messages in their private channels.
+6. Responses are compiled and posted in the `responses` channel.
+
+## Contributing
+
+Contributions are welcome! Feel free to submit issues or pull requests to improve the bot.
+
+## License
+
+This project is licensed under the MIT License. See the `LICENSE` file for details.

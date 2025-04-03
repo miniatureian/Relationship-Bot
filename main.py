@@ -62,10 +62,8 @@ async def info(ctx):
         "Available commands:\n"
         "!info - Show this info message\n"
         "!init - Configure the server with private channels for each user\n"
-        "!test - Placeholder command (to be implemented later)\n"
         "!prompt - Send a prompt to all users and create a thread in the responses channel\n"
         "!notify - Toggle notifications for prompt responses\n"
-        "!debug (number) - Set the debug level (0 = Silent, 1 = Errors, 2 = Info, 3 = Verbose)"
     )
     await ctx.send(info_message)
 
@@ -137,11 +135,6 @@ async def send_new_prompt(ctx):
             message_ids[message.id] = {member.name}
             manager.add_message_id(prompt_id,message.id,member.id)
     pass
-
-@bot.command()
-async def test(ctx):
-    _,prompt_data = manager.get_prompt_by_message_id("1357178136642453654")
-    await send_responses(ctx, prompt_data)
 
 async def send_responses(ctx, prompt_data):
     # Create a thread in the responses channel
